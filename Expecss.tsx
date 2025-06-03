@@ -14,6 +14,14 @@ export const COLORS = {
 
 };
 
+export const TILE_CONFIG = {
+  SPACING_DIVISOR: 6,
+  MAX_SIZE: 40,
+  LINE_WIDTH_MULTIPLIER: 0.6,
+  CIRCLE_RADIUS_MULTIPLIER: 0.1,
+  MARGIN: 5,
+};
+
 export const TEXT_CONFIG = {
 fontsize :15 ,
 tilecolordefault : 'white',

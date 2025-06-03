@@ -292,6 +292,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isMouseDown, setIsMouseDown] = useState(false);
   const [pathConnections, setPathConnections] = useState<Array<{from: [number, number], to: [number, number]}>>([]);
+  const containerScreenOffset = useRef({ x: 0, y: 0 });
 
   const history = useRef<{ path: string[], expression: string }[]>([{ path: [], expression: '' }]);
   const [historyIndex, setHistoryIndex] = useState(0);
@@ -380,11 +381,20 @@ export default function App() {
 
   const isSelected = (row: number, col: number): boolean => path.includes(`${row}-${col}`);
 
-  const getTileFromPosition = (x: number, y: number): { row: number, col: number } | null => {
-    for (const [key, bounds] of Object.entries(tileRefs.current)) {
-      if (x >= bounds.x && x <= bounds.x + bounds.width &&
-          y >= bounds.y && y <= bounds.y + bounds.height) {
-        const [row, col] = key.split('-').map(Number);
+  // New function to get tile from coordinates relative to the grid container
+  const getTileFromGridPosition = (localX: number, localY: number): { row: number, col: number } | null => {
+    const cellDimension = tileSize + TILE_CONFIG.MARGIN * 2; // Total space for one tile cell
+
+    const col = Math.floor(localX / cellDimension);
+    const row = Math.floor(localY / cellDimension);
+
+    if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
+      // Check if the touch is within the actual tile, not its surrounding margin
+      const xInCell = localX - col * cellDimension; // x relative to the start of this specific cell
+      const yInCell = localY - row * cellDimension; // y relative to the start of this specific cell
+
+      if (xInCell >= TILE_CONFIG.MARGIN && xInCell < (TILE_CONFIG.MARGIN + tileSize) &&
+          yInCell >= TILE_CONFIG.MARGIN && yInCell < (TILE_CONFIG.MARGIN + tileSize)) {
         return { row, col };
       }
     }
@@ -408,22 +418,47 @@ export default function App() {
 
   const handleMouseEnter = (row: number, col: number) => {
     if (Platform.OS === 'web' && isMouseDown) {
+      const currentTileKey = `${row}-${col}`;
+      const lastTileKey = path.length > 0 ? path[path.length - 1] : null;
+
+      if (currentTileKey === lastTileKey) {
+        // Dragging over the same tile, do nothing
+        return;
+      }
+
+      if (path.length >= 2) {
+        const secondLastTileKey = path[path.length - 2];
+        if (currentTileKey === secondLastTileKey) {
+          // Dragging back - undo last step
+          const newPath = path.slice(0, -1);
+          const newConnections = pathConnections.slice(0, -1);
+
+          // Calculate new expression
+          let newExpr = '';
+          for (let i = 0; i < newPath.length; i++) {
+            const [r, c] = newPath[i].split('-').map(Number);
+            newExpr += puzzle.grid[r][c];
+          }
+
+          setPath(newPath);
+          setExpression(newExpr);
+          setPathConnections(newConnections);
+
+          // Update history - remove the last entry
+          const updatedHistory = history.current.slice(0, historyIndex); // Remove the last entry
+          history.current = updatedHistory;
+          setHistoryIndex(updatedHistory.length - 1); // Move index back
+
+          return; // Stop processing after undoing
+        }
+      }
+
+      // If not dragging back and not on the same tile, try to add to path
       addToPath(row, col);
     }
   };
 
-  const handleTouchStart = (row: number, col: number) => {
-    if (Platform.OS !== 'web') {
-      setIsDragging(true);
-      addToPath(row, col);
-    }
-  };
-
-  const handleTouchEnd = () => {
-    if (Platform.OS !== 'web') {
-      setIsDragging(false);
-    }
-  };
+  // handleTouchStart and handleTouchEnd are removed as PanResponder and Pressable's onPress will handle interactions.
 
   const addToPath = (row: number, col: number) => {
     const key = `${row}-${col}`;
@@ -524,42 +559,101 @@ export default function App() {
       addToPath(row, col);
     }
   };
+
 const panResponder = PanResponder.create({
-  onStartShouldSetPanResponder: () => true, // Always try to handle on mobile
-  onMoveShouldSetPanResponder: () => true,
+  onStartShouldSetPanResponder: (_evt, _gestureState) => Platform.OS !== 'web',
+  onMoveShouldSetPanResponder: (_evt, _gestureState) => Platform.OS !== 'web',
   
   onPanResponderGrant: (evt) => {
+    if (Platform.OS === 'web') return;
     setIsDragging(true);
-    const { pageX, pageY } = evt.nativeEvent; // Use pageX/pageY instead
-    const tile = getTileFromPosition(pageX, pageY);
-    if (tile) {
-      addToPath(tile.row, tile.col);
-    }
-  },
-  
-  onPanResponderMove: (evt) => {
-    // Remove isDragging check since we're already in a pan gesture
     const { pageX, pageY } = evt.nativeEvent;
-    const currentTileInfo = getTileFromPosition(pageX, pageY);
+    const localX = pageX - containerScreenOffset.current.x;
+    const localY = pageY - containerScreenOffset.current.y;
     
-    if (currentTileInfo) {
-      const currentTileKey = `${currentTileInfo.row}-${currentTileInfo.col}`;
-      const lastActualTileInPath = path.length > 0 ? path[path.length - 1] : null;
-      
-      if (currentTileKey !== lastActualTileInPath) {
-        addToPath(currentTileInfo.row, currentTileInfo.col);
+    const tile = getTileFromGridPosition(localX, localY);
+    if (tile) {
+      // Check if path is empty or the new tile is different from the last one
+      // This prevents adding the same tile multiple times if grant is called rapidly
+      // or if the initial touch also triggered an add via another mechanism (though we're trying to avoid that)
+      const key = `${tile.row}-${tile.col}`;
+      if (path.length === 0 || path[path.length -1] !== key) {
+         addToPath(tile.row, tile.col);
       }
     }
   },
   
+  onPanResponderMove: (evt) => {
+    if (Platform.OS === 'web') return;
+
+    const { pageX, pageY } = evt.nativeEvent;
+    const localX = pageX - containerScreenOffset.current.x;
+    const localY = pageY - containerScreenOffset.current.y;
+
+    const currentTileInfo = getTileFromGridPosition(localX, localY);
+
+    if (currentTileInfo) {
+      const currentTileKey = `${currentTileInfo.row}-${currentTileInfo.col}`;
+      const lastTileKey = path.length > 0 ? path[path.length - 1] : null;
+
+      if (currentTileKey === lastTileKey) {
+        // Dragging over the same tile, do nothing
+        return;
+      }
+
+      if (path.length >= 2) {
+        const secondLastTileKey = path[path.length - 2];
+        if (currentTileKey === secondLastTileKey) {
+          // Dragging back - undo last step
+          const newPath = path.slice(0, -1);
+          const newConnections = pathConnections.slice(0, -1);
+
+          // Calculate new expression
+          let newExpr = '';
+          for (let i = 0; i < newPath.length; i++) {
+            const [r, c] = newPath[i].split('-').map(Number);
+            newExpr += puzzle.grid[r][c];
+          }
+
+          setPath(newPath);
+          setExpression(newExpr);
+          setPathConnections(newConnections);
+
+          // Update history - remove the last entry
+          const updatedHistory = history.current.slice(0, historyIndex); // Remove the last entry
+          history.current = updatedHistory;
+          setHistoryIndex(updatedHistory.length - 1); // Move index back
+
+          return; // Stop processing after undoing
+        }
+      }
+
+      // If not dragging back and not on the same tile, try to add to path
+      addToPath(currentTileInfo.row, currentTileInfo.col);
+    }
+  },
+  
   onPanResponderRelease: () => {
+    if (Platform.OS === 'web') return;
     setIsDragging(false);
   },
   
   onPanResponderTerminate: () => {
+    if (Platform.OS === 'web') return;
     setIsDragging(false);
   },
 });
+
+  const onContainerLayout = () => {
+    if (containerRef.current) {
+      containerRef.current.measure((_x, _y, _width, _height, absoluteX, absoluteY) => {
+         if (typeof absoluteX === 'number' && typeof absoluteY === 'number') {
+            containerScreenOffset.current = { x: absoluteX, y: absoluteY };
+        }
+      });
+    }
+  };
+
   const autoSolve = () => {
     const solutionPathKeys = puzzle.solutionPath.map(([r, c]) => `${r}-${c}`);
     let solutionExpr = '';
@@ -654,8 +748,13 @@ const panResponder = PanResponder.create({
 
         <SizeSelector currentSize={gridSize} onSizeChange={handleSizeChange} />
 
-        <View style={styles.container} {...(Platform.OS !== 'web' ? panResponder.panHandlers : {})} ref={containerRef}>
-          <Svg 
+        <View
+          style={styles.container}
+          {...(Platform.OS !== 'web' ? panResponder.panHandlers : {})}
+          ref={containerRef}
+          onLayout={onContainerLayout} // Added onLayout handler
+        >
+          <Svg
             style={styles.svgOverlay}
             width="100%" 
             height="100%"
@@ -726,10 +825,7 @@ const panResponder = PanResponder.create({
                   onMouseDown: () => handleMouseDown(rowIndex, colIndex),
                   onMouseEnter: () => handleMouseEnter(rowIndex, colIndex),
                   onMouseUp: handleMouseUp,
-                } : {
-                  onTouchStart: () => handleTouchStart(rowIndex, colIndex),
-                  onTouchEnd: handleTouchEnd,
-                };
+                } : {}; // For native, rely on Pressable's onPress and PanResponder
 
                 return (
                   <AnimatedTile
